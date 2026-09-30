@@ -311,6 +311,9 @@ PERMISSIONS = [
     ("announcements.write", "维护公告", "announcements", "write"),
     ("audit.read", "查看审计", "audit", "read"),
     ("jobs.run", "执行后台任务", "jobs", "run"),
+    ("handover.read", "查看行动包", "handover", "read"),
+    ("handover.manage", "发起与办理行动包", "handover", "manage"),
+    ("handover.duty", "值班超时接管", "handover", "duty"),
 ]
 
 
