@@ -293,6 +293,75 @@ CREATE TABLE IF NOT EXISTS compute_interventions (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_compute_interventions_task ON compute_interventions(task_id,id);
+
+CREATE TABLE IF NOT EXISTS handoff_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    initiator_user_id INTEGER REFERENCES users(id),
+    initiator_name TEXT NOT NULL,
+    initiator_department_id INTEGER REFERENCES departments(id),
+    status TEXT NOT NULL DEFAULT 'in_progress' CHECK(status IN ('in_progress','completed')),
+    current_version_no INTEGER NOT NULL DEFAULT 1,
+    locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0,1)),
+    conclusion TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_handoff_packages_status ON handoff_packages(status, created_at);
+
+CREATE TABLE IF NOT EXISTS handoff_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES handoff_packages(id) ON DELETE RESTRICT,
+    version_no INTEGER NOT NULL,
+    materials_json TEXT NOT NULL,
+    manifest_digest TEXT NOT NULL,
+    revised_from_record_id INTEGER,
+    created_by_user_id INTEGER REFERENCES users(id),
+    created_by_name TEXT NOT NULL,
+    remark TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(package_id, version_no)
+);
+
+CREATE TABLE IF NOT EXISTS handoff_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES handoff_packages(id) ON DELETE RESTRICT,
+    seq INTEGER NOT NULL,
+    version_no INTEGER NOT NULL,
+    sender_user_id INTEGER REFERENCES users(id),
+    sender_name TEXT NOT NULL DEFAULT '',
+    sender_department_id INTEGER,
+    receiver_department_id INTEGER NOT NULL REFERENCES departments(id),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','partial','accepted','returned','forwarded','reassigned','completed')),
+    deadline_at TEXT NOT NULL,
+    acknowledged_at TEXT,
+    return_reason TEXT NOT NULL DEFAULT '',
+    dispatched_by_user_id INTEGER REFERENCES users(id),
+    dispatched_by_name TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(package_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_handoff_records_receiver ON handoff_records(receiver_department_id, status, deadline_at);
+CREATE INDEX IF NOT EXISTS idx_handoff_records_package ON handoff_records(package_id, seq);
+
+CREATE TABLE IF NOT EXISTS handoff_item_acks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES handoff_packages(id) ON DELETE RESTRICT,
+    handoff_record_id INTEGER NOT NULL REFERENCES handoff_records(id) ON DELETE RESTRICT,
+    version_no INTEGER NOT NULL,
+    material_key TEXT NOT NULL,
+    accepted INTEGER NOT NULL CHECK(accepted IN (0,1)),
+    note TEXT NOT NULL DEFAULT '',
+    acked_by_user_id INTEGER REFERENCES users(id),
+    acked_by_name TEXT NOT NULL,
+    acked_at TEXT NOT NULL,
+    UNIQUE(handoff_record_id, material_key)
+);
+CREATE INDEX IF NOT EXISTS idx_handoff_acks_record ON handoff_item_acks(handoff_record_id);
 '''
 
 PERMISSIONS = [
@@ -311,6 +380,9 @@ PERMISSIONS = [
     ("announcements.write", "维护公告", "announcements", "write"),
     ("audit.read", "查看审计", "audit", "read"),
     ("jobs.run", "执行后台任务", "jobs", "run"),
+    ("handoff.read", "查看行动包", "handoff", "read"),
+    ("handoff.write", "办理行动包交接", "handoff", "write"),
+    ("handoff.dispatch", "值班重新分派", "handoff", "dispatch"),
 ]
 
 
@@ -380,10 +452,20 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO roles(code,name,description,is_system,created_at,updated_at) VALUES('auditor','审计查看员','只读查看业务与审计记录',1,?,?)",
             (now, now),
         )
+        connection.execute(
+            "INSERT OR IGNORE INTO roles(code,name,description,is_system,created_at,updated_at) VALUES('duty_officer','值班调度员','可重新分派超时的跨部门交接',1,?,?)",
+            (now, now),
+        )
         administrator = connection.execute("SELECT id FROM roles WHERE code='administrator'").fetchone()[0]
         connection.execute(
             "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,granted_at) SELECT ?,id,? FROM permissions",
             (administrator, now),
+        )
+        duty_officer = connection.execute("SELECT id FROM roles WHERE code='duty_officer'").fetchone()[0]
+        connection.execute(
+            "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,granted_at) "
+            "SELECT ?,id,? FROM permissions WHERE code IN ('handoff.read','handoff.dispatch')",
+            (duty_officer, now),
         )
 
 
